@@ -1,58 +1,59 @@
 //! - Initial demand is generated based on a demand level (simulator input)
 //! - At each EPOCH, generate Users on each region based on a poisson distribution multiplied by a weight (DEMAND)
 
-use petgraph::dot::{Config, Dot};
-use petgraph::graph::{UnGraph};
-use statrs::distribution::Poisson;
-use rand::{rngs::OsRng, distributions::Distribution};
+mod metrics;
+mod graph;
+mod random;
+mod topology_01;
 
-struct RandomGenerator {
-    poisson: Poisson,
-    rng: OsRng
+const NUM_ITERATIONS: u32 = 500;
+
+#[derive(serde::Serialize)]
+pub struct Metric {
+    rider_exits: i32,
+    complete_travels: i32
 }
-
-impl RandomGenerator {
-    pub fn new(p_lambda: f64) -> RandomGenerator {
-        let rng = OsRng {};
-        let poisson = Poisson::new(p_lambda).expect("Cannot generate poisson distribution.");
-
-        RandomGenerator {
-            rng, poisson
-        }
-    }
-
-    pub fn gen_poisson(&mut self) -> f64 {
-        self.poisson.sample(&mut self.rng)
-    }
-}
-
-fn generate_graph01() -> UnGraph<i32, ()> {
-    UnGraph::<i32, ()>::from_edges(&[
-        (0, 1), (0, 5),
-        (1, 2), (1, 6),
-        (2, 3), (2, 7), (2, 6),
-        (3, 7), (3, 4), (3, 8),
-        (4, 9), (4, 8),
-        (5, 6), (5, 10),
-        (6, 7), (6, 11), (6, 10),
-        (7, 8), (7, 12), (7, 11),
-        (8, 9), (8, 13), (8, 12),
-        (9, 13),
-        (10, 11), (10, 15),
-        (11, 12), (11, 15),
-        (12, 13), (12, 18), (12, 17), (12, 15),
-        (13, 14), (13, 18),
-        (14, 18),
-        (15, 17), (15, 16),
-        (16, 17),
-        (17, 18),
-        (18, 14)
-    ])
-}
-
 
 fn main() {
-    let mut rng = RandomGenerator::new(20.0);
-    let graph = generate_graph01();
-    println!("{:?}", Dot::with_config(&graph, &[Config::NodeIndexLabel, Config::EdgeNoLabel]));
+    let mut metrics = Vec::new();
+    let mut demands = topology_01::generate_demands();
+    let mut loads = topology_01::generate_station_loads();
+    let num_nodes = demands.len();
+
+
+    for _ in 0..NUM_ITERATIONS {
+        let mut rider_exits = 0;
+        let mut complete_travels = 0;
+
+        for node_number in 0..num_nodes {
+            // Riders attempt to remove bikes, if there are enough bikes the stations is left
+            // with bikes and the riders are satisfied, else, some riders exit the system and
+            // the stations are left empty.
+            let mut bikers_travelling = 0;
+
+            if loads[&node_number] >= demands[&node_number] {
+                bikers_travelling += demands[&node_number];
+                loads.insert(node_number, loads[&node_number] - demands[&node_number]);
+                demands.insert(node_number, 0);
+            } else {
+                bikers_travelling += loads[&node_number];
+                let bikers_leaving_the_system = demands[&node_number] - loads[&node_number];
+                rider_exits += bikers_leaving_the_system;
+
+                demands.insert(node_number, 0);
+                loads.insert(node_number, 0);
+            }
+
+            // Riders destination is uniformly distributed
+            for _ in 0..bikers_travelling {
+                let destination = random::uniform_integer_0_end(num_nodes as u32) as usize;
+                loads.insert(destination, 1 + loads[&destination]);
+            }
+
+            complete_travels += bikers_travelling;
+        }
+        topology_01::renew_demands(&mut demands);
+        metrics.push(Metric { rider_exits, complete_travels });
+    }
+    metrics::write_to_file(metrics);
 }
