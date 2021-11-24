@@ -1,3 +1,4 @@
+#![doc(html_logo_url = "https://www.onlygfx.com/wp-content/uploads/2015/12/bicycle-1024x602.png")]
 //! - Initial demand is generated based on a demand level (simulator input)
 //! - At each EPOCH, generate Users on each region based on a poisson distribution multiplied by a weight (DEMAND)
 
