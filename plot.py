@@ -9,4 +9,5 @@ plt.plot(df["complete_travels"], color="g", label="Viagens Completas")
 plt.xlabel("Epoch")
 plt.legend(loc="upper left")
 
-plt.savefig("fig.png")
+plt.plot()
+plt.show()
