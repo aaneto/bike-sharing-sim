@@ -33,6 +33,8 @@
 //! 3. Os clientes escolhem um destino aleatório de forma uniforme e reabastecem esses pontos com suas
 //! bicicletas.
 //!
+//! Nesse caso a demanda é estática e gerada na inicialização.
+//!
 //! ## Objetivo da Simulação:
 //!
 //! Queremos avaliar a performance de heuristicas para reposição de bicicletas, dessa forma queremos responder
@@ -40,6 +42,12 @@
 //! - Qual o impacto da interrupção do serviço de distribuição?
 //! - Qual o melhor algoritmo de distribuição?
 //! - Qual o desempenho que os caminhões precisam ter para alcançarmos a funcionalidade desejada?
+//!
+//! ## Todo:
+//! - Documentar etapas da geração com mais detalhes dentro das funções
+//! - Implementar lógica dos caminhões
+//! - Metrificar resultados para verificar se simulação ainda faz sentido
+//! - Implementar distribuições corretas de geração de passageiros baseado na demanda (variando com o tempo).
 
 mod metrics;
 mod graph;
