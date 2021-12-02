@@ -45,63 +45,202 @@
 //!
 //! ## Todo:
 //! - Documentar etapas da geração com mais detalhes dentro das funções
-//! - Implementar lógica dos caminhões
 //! - Metrificar resultados para verificar se simulação ainda faz sentido
-//! - Implementar distribuições corretas de geração de passageiros baseado na demanda (variando com o tempo).
-
 mod metrics;
-mod graph;
 mod random;
-mod topology_01;
-
-const NUM_ITERATIONS: u32 = 500;
 
 #[derive(serde::Serialize)]
 pub struct Metric {
     rider_exits: i32,
-    complete_travels: i32
+    complete_travels: i32,
+}
+
+/// Container para bikes que estão para chegar em um ponto de distribuição,
+/// essa abstração é necessária porque os agentes de reposição levam unidades
+/// de tempo predefinidos (dependendo do grafo) para chegar de um ponto até outro
+struct IncomingBikes {
+    /// Quando epochs_to_arrival é igual a zero, as bikes chegaram e este struct se desfaz.
+    epochs_to_arrival: u64,
+}
+
+struct Vertex {
+    bikes_available: u64,
+    cyclists_poisson_lambda: f64,
+    incoming_bikes: Vec<IncomingBikes>,
+}
+
+struct Topology {
+    travel_time: u64,
+    reposition_travel_time: u64,
+    vertexes: Vec<Vertex>,
+    /// Served customers by epoch
+    served_customers: Vec<u64>,
+    /// Rejected customers by epoch
+    rejected_customers: Vec<u64>,
+}
+
+impl Topology {
+    fn new(
+        travel_time: u64,
+        reposition_travel_time: u64,
+        cyclists_arrival_means: Vec<f64>,
+        bikes_available: Vec<u64>,
+    ) -> Topology {
+        if cyclists_arrival_means.len() != bikes_available.len() {
+            panic!("Cyclists arrival means must have the same dimension as bikes available.");
+        }
+
+        Topology {
+            vertexes: (0..bikes_available.len())
+                .map(|i| Vertex {
+                    bikes_available: bikes_available[i],
+                    cyclists_poisson_lambda: cyclists_arrival_means[i],
+                    incoming_bikes: vec![],
+                })
+                .collect(),
+            served_customers: vec![],
+            rejected_customers: vec![],
+            travel_time,
+            reposition_travel_time
+        }
+    }
+
+    /// Os ciclistas são gerados em cada vértice seguindo uma distribuição poisson de média igual
+    /// a demanda, se são gerados 20 ciclistas naquele vértice e existem 12 bikes, não sobram bikes
+    /// e 8 saem do sistema. Caso existam 12 ciclista e 20 bikes, 8 bikes sobram e nenhum ciclista
+    /// sai do sistema.
+    fn distribute_bikes(&mut self) {
+        let mut served_customers = 0;
+        let mut rejected_customers = 0;
+
+        for v in self.vertexes.iter_mut() {
+            let generated_bikers = random::poisson_0_to_lambda(v.cyclists_poisson_lambda) as u64;
+            if v.bikes_available > generated_bikers {
+                served_customers += generated_bikers;
+                v.bikes_available -= generated_bikers;
+            } else {
+                rejected_customers += generated_bikers - v.bikes_available;
+                served_customers += v.bikes_available;
+                v.bikes_available = 0;
+            }
+        }
+        self.served_customers.push(served_customers);
+        self.rejected_customers.push(rejected_customers);
+        self.generate_incoming_bikes(served_customers);
+    }
+
+    /// Verifica bikes que estavam em transição entre pontos do grafo, caso elas tenham chegado ao destino
+    /// incrementar esses locais com as bikes.
+    fn check_incoming_bikes(&mut self) {
+        for v in self.vertexes.iter_mut() {
+            let mut vertex_arrivals = 0;
+            for incoming_bike in v.incoming_bikes.iter_mut() {
+                incoming_bike.epochs_to_arrival -= 1;
+
+                if incoming_bike.epochs_to_arrival == 0 {
+                    vertex_arrivals += 1;
+                }
+            }
+            // Remove bikes that arrived.
+            v.incoming_bikes.retain(|ib| ib.epochs_to_arrival > 0);
+            v.bikes_available += vertex_arrivals;
+        }
+    }
+
+    /// Esta função gera a estrutura IncomingBikes, responsável por controlar a movimentação de bikes
+    /// no grafo, a estrutura é necessária uma vez que não podemos mover bikes de forma instantanea, existe
+    /// um delay de instantes de tempo até a bike alcançar o destino.
+    fn generate_incoming_bikes(&mut self, nof_customers: u64) {
+        for _ in 0..nof_customers {
+            let destination_idx =
+                random::uniform_integer_0_end(self.vertexes.len() as u32) as usize;
+            self.vertexes[destination_idx]
+                .incoming_bikes
+                .push(IncomingBikes {
+                    epochs_to_arrival: self.travel_time,
+                })
+        }
+    }
+
+    fn build_metrics(&self) -> Vec<Metric> {
+        let mut m = vec![];
+        for i in 0..self.served_customers.len() {
+            let rider_exits = self.rejected_customers[i] as i32;
+            let complete_travels = self.served_customers[i] as i32;
+            m.push(Metric {
+                rider_exits: rider_exits,
+                complete_travels: complete_travels,
+            })
+        }
+
+        m
+    }
+
+    fn demand_based_reposition(&mut self, rep: usize, batch_size: u64) {
+        for _ in 0..rep {
+            let pg = self.find_vertex_with_positive_gap();
+            let ng = self.find_vertex_with_negative_gap();
+
+            match (pg, ng) {
+                (Some(pgi), Some(ngi)) => {
+                    let moved = if self.vertexes[ngi].bikes_available > batch_size {
+                        batch_size
+                    } else {
+                        self.vertexes[ngi].bikes_available
+                    };
+                    self.vertexes[ngi].bikes_available -= moved;
+                    for _ in 0..moved {
+                        self.vertexes[pgi].incoming_bikes.push(IncomingBikes {
+                            epochs_to_arrival: self.reposition_travel_time
+                        });
+                    }
+                },
+                _ => ()
+            }
+        }
+    }
+
+    fn find_vertex_with_positive_gap(&self) -> Option<usize> {
+        for i in 0..self.vertexes.len() {
+            let gap = self.vertexes[i].cyclists_poisson_lambda - self.vertexes[i].bikes_available as f64;
+            if gap > 0.0 {
+                return Some(i);
+            }
+        }
+
+        return None;
+    }
+
+    fn find_vertex_with_negative_gap(&self) -> Option<usize> {
+        for i in 0..self.vertexes.len() {
+            let gap = self.vertexes[i].cyclists_poisson_lambda - self.vertexes[i].bikes_available as f64;
+            if gap < 0.0 {
+                return Some(i);
+            }
+        }
+
+        return None;
+    }
 }
 
 fn main() {
-    let mut metrics = Vec::new();
-    let mut demands = topology_01::generate_demands();
-    let mut loads = topology_01::generate_station_loads();
-    let num_nodes = demands.len();
+    let travel_time =3 ;
+    let reposition_travel_time = 1;
+    let mut topology = Topology::new(
+        travel_time,
+        reposition_travel_time,
+        vec![
+            4.0, 12.0, 13.0, 3.0, 4.0, 5.0, 3.0, 4.0, 3.0, 3.0, 4.0, 5.0, 3.0, 9.0, 7.0, 3.0, 4.0,
+            8.0, 2.0, 3.0,
+        ],
+        (0..20).map(|_| 9).collect(),
+    );
 
-
-    for _ in 0..NUM_ITERATIONS {
-        let mut rider_exits = 0;
-        let mut complete_travels = 0;
-
-        for node_number in 0..num_nodes {
-            // Riders attempt to remove bikes, if there are enough bikes the stations is left
-            // with bikes and the riders are satisfied, else, some riders exit the system and
-            // the stations are left empty.
-            let mut bikers_travelling = 0;
-
-            if loads[&node_number] >= demands[&node_number] {
-                bikers_travelling += demands[&node_number];
-                loads.insert(node_number, loads[&node_number] - demands[&node_number]);
-                demands.insert(node_number, 0);
-            } else {
-                bikers_travelling += loads[&node_number];
-                let bikers_leaving_the_system = demands[&node_number] - loads[&node_number];
-                rider_exits += bikers_leaving_the_system;
-
-                demands.insert(node_number, 0);
-                loads.insert(node_number, 0);
-            }
-
-            // Riders destination is uniformly distributed
-            for _ in 0..bikers_travelling {
-                let destination = random::uniform_integer_0_end(num_nodes as u32) as usize;
-                loads.insert(destination, 1 + loads[&destination]);
-            }
-
-            complete_travels += bikers_travelling;
-        }
-        topology_01::renew_demands(&mut demands);
-        metrics.push(Metric { rider_exits, complete_travels });
+    for _ in 0..150 {
+        topology.check_incoming_bikes();
+        topology.distribute_bikes();
+        topology.demand_based_reposition(4, 1);
     }
-    metrics::write_to_file(metrics);
+    let metrics = topology.build_metrics();
+    metrics::write_to_file(metrics, "metrics.json");
 }

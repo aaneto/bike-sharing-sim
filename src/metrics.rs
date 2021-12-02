@@ -1,14 +1,14 @@
+
+use serde::Serialize;
 use std::{
     io::Write,
     fs::File,
 };
 
-pub fn write_to_file(metrics: Vec<crate::Metric>) {
+pub fn write_to_file<T: Serialize>(metrics: T, filename: &str) {
     let text = serde_json::to_string(&metrics).unwrap();
-
-    let err_msg = "Cannot create graph file";
-    File::create("metrics.json")
-        .expect(err_msg)
+    File::create(filename)
+        .expect("Cannot write file")
         .write_all(&text.as_bytes())
-        .expect(err_msg);
+        .expect("Cannot write file");
 }

@@ -1,5 +1,6 @@
 import pandas
 import matplotlib.pyplot as plt
+import sys
 
 df = pandas.read_json("metrics.json")
 df = df.ewm(span = 200).mean()
@@ -10,4 +11,4 @@ plt.xlabel("Epoch")
 plt.legend(loc="upper left")
 
 plt.plot()
-plt.show()
+plt.savefig(sys.argv[-1])
